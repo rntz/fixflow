@@ -105,15 +105,3 @@
 ;; freely! otherwise, remove yourself and report the set on upwards.
 ;;
 ;; is there any way for us to have finished an SCC and have it not be empty?
-
-
-;;; VERSION 2 - based on recur.mli
-
-;; ;; fix : (k -> v), ((k -> v), k -> v) -> (k -> v)
-;; (define (fix init func)
-;;   (define cache (make-weak-hasheq))
-;;   (define (get k) (hash-ref! cache k (lambda () (init k))))
-;;   (define (put! k v) (hash-set! cache k v))
-
-;;   (define ())
-;;   )
