@@ -17,11 +17,13 @@ module Flow(Key: Map.OrderedType) : (FLOW with type key = Key.t) = struct
     type key = Key.t
     module S = Set.Make(Key)
     module M = Map.Make(Key)
+    type keyset = S.t
+    type 'a map = 'a M.t
 
     (* takes: frozen
      * returns: (value, changed, visited) *)
-    type 'a result = 'a * bool * S.t
-    type 'a exp = S.t -> 'a result
+    type 'a result = 'a * bool * keyset
+    type 'a exp = keyset -> 'a result
 
     let pure x _ = (x, false, S.empty)
     let (~) f a frozen =
@@ -35,13 +37,12 @@ module Flow(Key: Map.OrderedType) : (FLOW with type key = Key.t) = struct
        S.union f_visited a_visited)
 
     (* my god, what have I done *)
-    (* problem: doesn't remember "finished" nodes between calls. hm. *)
     let fix (init: key -> 'v)
             (func: (key -> 'v exp) -> key -> 'v exp)
         : key -> 'v =
-      let cache = ref M.empty in
-      let put k v = cache := M.add k v (!cache) in
-      let get k = try M.find k (!cache)
+      let cache: 'v map ref = ref M.empty in
+      let put k v = cache := M.add k v !cache in
+      let get k = try M.find k !cache
                   with Not_found -> let v = init k in (put k v; v) in
       let rec visit key frozen : 'v result =
         let cached_value = get key in
@@ -67,9 +68,11 @@ module Flow(Key: Map.OrderedType) : (FLOW with type key = Key.t) = struct
             then (new_value, changed_so_far || changed, S.add key visited)
             (* keep computing until we haven't changed anything. *)
             else loop true
-          in loop false
-      in fun key -> let (value, _, _) = visit key S.empty in
-                    value
+          in loop false in
+      let finished = ref S.empty in
+      fun key -> let (value, _, visited) = visit key !finished in
+                 let () = finished := S.union !finished visited in
+                 value
 end;;
 
 module F = Flow(String)
