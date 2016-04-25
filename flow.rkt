@@ -16,24 +16,24 @@
   (define (compute frozen key)
     (define cached-value (get key))
     (if (set-member? frozen key)
-        ;; we return (set key) here so that the check for (not (set-member? key
-        ;; visited)), below, works. otherwise could return (set).
-        (values cached-value #f (set key))
+        ;; we return (seteq key) here so that the check for (not (set-member?
+        ;; key visited)), below, works. otherwise could return (seteq).
+        (values cached-value #f (seteq key))
         (iterate (set-add frozen key) key cached-value)))
 
   (define (iterate frozen key cached-value)
-    (let loop ([changed-so-far #f])
+    (let loop ([changed-so-far #f] [old-value cached-value])
       (define-values (new-value changed visited) (run-node frozen key))
-      (unless (value-equal? cached-value new-value)
+      (unless (value-equal? old-value new-value)
         (set! changed #t)
         (put! key new-value))
       (cond
         [(not changed)
-         (values cached-value changed-so-far (set-add visited key))]
+         (values old-value changed-so-far (set-add visited key))]
         ;; if we didn't depend on ourselves, there's no need to iterate.
         [(not (set-member? visited key))
          (values new-value (or changed changed-so-far) (set-add visited key))]
-        [#t (loop #t)])))
+        [#t (loop #t new-value)])))
 
   ;; this is the bit where we emulate the State monad.
   (define (run-node frozen key)
@@ -46,11 +46,21 @@
       (set! visited-sets (cons visited visited-sets))
       value)
     (define value (func visit key))
-    (values value any-changed (apply set-union (set) visited-sets)))
+    (values value any-changed (apply set-union (seteq) visited-sets)))
 
   (define finished (weak-seteq))
   (lambda (key)
     (define frozen (set-union (seteq) finished))
-    (define-values (value _ visited) (compute key frozen))
+    (define-values (value _ visited) (compute frozen key))
     (set-union! finished visited)
     value))
+
+
+;; examples
+(define (func1 self n)
+  (match n
+    [0 (define prev (self 0))
+       (if (< prev 2) (+ 1 prev) prev)]
+    [n (+ 1 (self (- n 1)))]))
+
+(define example1 (fix (const 0) func1))
