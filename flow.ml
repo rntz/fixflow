@@ -82,17 +82,16 @@ module Flow(Node: FlowNode) : (FLOW with type node = Node.t) = struct
                  iterate node (S.add node frozen) cached_value
 
           and iterate node frozen =
-            let recur () = step visit node frozen in
             let rec loop changed_so_far old_value =
               let () = printf "iterating %s\n%!" (Node.to_string node) in
-              let (new_value, changed, visited) = recur () in
+              let (new_value, changed, visited) = step visit node frozen in
               let () =
                 printf "iterated %s, old value %s, new value %s, changed %B\n%!"
                        (Node.to_string node)
                        (value_to_string old_value)
                        (value_to_string new_value)
                        changed in
-              let changed = if old_value = new_value
+              let changed = if value_eq old_value new_value
                             then changed
                             else (put node new_value; true) in
               (* if nothing changed, we're done *)
