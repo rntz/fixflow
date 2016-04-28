@@ -97,10 +97,10 @@ module Flow(Node: FlowNode) : (FLOW with type node = Node.t) = struct
               (* if nothing changed, we're done *)
               if not changed
               then (old_value, changed_so_far, S.add node visited)
-                     (* if we didn't depend on ourselves, no need to iterate *)
+              (* if we didn't depend on ourselves, no need to iterate *)
               else if not (S.mem node visited)
               then (new_value, changed_so_far || changed, S.add node visited)
-                     (* keep computing until we haven't changed anything. *)
+              (* keep computing until we haven't changed anything. *)
               else loop true new_value
             in loop false
 
