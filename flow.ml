@@ -128,6 +128,9 @@ let odd n = not (even n)
 
 
 (* examples *)
+(* f 0 = if f 0 < 2 then f 0 + 1 else f 0
+ * f n = 1 + f (n-1)
+ *)
 let func1 (self: int -> int I.exp) (x: int): int I.exp =
   let prev = self x in
   match x with
