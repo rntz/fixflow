@@ -1,4 +1,46 @@
-(* a weird sort of recursive dataflow system? *)
+(* a weird sort of recursive dataflow system *)
+
+#use "debug.ml";;
+
+(* utility *)
+exception Unimplemented
+
+let const x y = x
+let option default opt = match opt with
+  | None -> default
+  | Some x -> x
+
+let even (n:int): bool = n mod 2 = 0
+let odd n = not (even n)
+
+module ListUtils = struct
+    let tabulate (keys: 'a list) (func: 'a -> 'b): ('a * 'b) list =
+      List.map (fun k -> (k, func k)) keys
+
+    let for_each (l: 'a list) (f: 'a -> unit): unit = ignore (List.map f l)
+end
+
+module type MAP_UTILS = sig
+    include Map.S
+    val of_list: (key * 'a) list -> 'a t
+    val tabulate : key list -> (key -> 'a) -> 'a t
+end
+
+module MapUtils(M: Map.S)
+       : (MAP_UTILS with type key = M.key
+                    with type 'a t = 'a M.t) =
+struct
+    include M
+    let of_list elts =
+      let accum m (k,v) = add k v m in
+      List.fold_left accum empty elts
+    let tabulate keys f =
+      let accum m k = add k (f k) m in
+      List.fold_left accum empty keys
+end
+
+
+(* Signatures *)
 module type FlowNode = sig
     include Map.OrderedType
     val to_string : t -> string (* for debugging *)
@@ -13,19 +55,22 @@ module type FLOW = sig
     val map : ('a -> 'b) -> 'a exp -> 'b exp
     val ap : ('a -> 'b) exp -> 'a exp -> 'b exp
 
-    (* lazily computing a fixed-point map *)
-    val fix : ?value_eq: ('v -> 'v -> bool)
-              -> ?value_to_string: ('v -> string)
-              -> init: (node -> 'v)
-              -> step: ((node -> 'v exp) -> node -> 'v exp)
-              -> unit           (* side effect at this point *)
-              -> (node -> 'v)
+    (* lazily computing a fixed-point map
+     * the map is only defined on nodes in `init'. *)
+    val fix : init: (node * 'v) list
+           -> step: ((node -> 'v exp) -> node -> 'v exp)
+           -> ?value_eq: ('v -> 'v -> bool)
+           -> ?value_to_string: ('v -> string)
+           -> unit              (* side effect at this point *)
+           -> (node -> 'v)
 end
 
-module Flow(Node: FlowNode) : (FLOW with type node = Node.t) = struct
+
+(* lazy pull-based dataflow with various optimizations *)
+module Pull(Node: FlowNode) : (FLOW with type node = Node.t) = struct
     type node = Node.t
     module S = Set.Make(Node)
-    module M = Map.Make(Node)
+    module M = MapUtils(Map.Make(Node))
     type nodeset = S.t
     type 'a map = 'a M.t
 
@@ -46,22 +91,19 @@ module Flow(Node: FlowNode) : (FLOW with type node = Node.t) = struct
        S.union f_visited a_visited)
     let map f a = ap (pure f) a
 
-    (* this is one hot mess *)
-    let fix ?(value_eq: 'v -> 'v -> bool = (=))
-            ?(value_to_string: 'v -> string = (fun _ -> "<abstract>"))
-            ~(init: node -> 'v)
+    let fix ~(init: (node * 'v) list)
             ~(step: (node -> 'v exp) -> node -> 'v exp)
+            ?(value_eq: 'v -> 'v -> bool = (=))
+            ?(value_to_string: 'v -> string = (fun _ -> "<abstract>"))
             () : node -> 'v =
       let module Graph = struct
           open Printf
 
-          let cache: 'v map ref = ref M.empty
+          let cache: 'v map ref = ref (M.of_list init)
           let finished = ref S.empty
 
           let put k v = cache := M.add k v !cache
-          let get k = try M.find k !cache
-                      with Not_found -> let v = init k
-                                        in (put k v; v)
+          let get k = M.find k !cache
 
           let rec compute node =
             let (value, _, visited) = visit node !finished in
@@ -109,22 +151,85 @@ module Flow(Node: FlowNode) : (FLOW with type node = Node.t) = struct
 end
 
 
+(* push-based dataflow with dirty-clean marking *)
+module Push(Node: FlowNode) : (FLOW with type node = Node.t) = struct
+    type node = Node.t
+    module S = Set.Make(Node)
+    module M = MapUtils(Map.Make(Node))
+    type nodeset = S.t
+    type 'a map = 'a M.t
+
+    (* an expression is:
+     * - a set of nodes it depends on
+     * - a thunk that computes it
+     *
+     * Note that this, unlike the definition of 'a exp used in Pull, does not
+     * form a monad!
+     *)
+    type 'a exp = nodeset * (unit -> 'a)
+
+    let pure x = (S.empty, fun () -> x)
+    let map f (adeps, a) = (adeps, fun () -> f (a ()))
+    let ap (fdeps,f) (adeps,a) = (S.union fdeps adeps, fun () -> f () (a ()))
+
+    let fix ~(init: (node * 'v) list)
+            ~(step: (node -> 'v exp) -> node -> 'v exp)
+            ?(value_eq: 'v -> 'v -> bool = (=))
+            ?(value_to_string: 'v -> string = (fun _ -> "<abstract>"))
+            () : node -> 'v =
+      let module Graph = struct
+          open Debug
+          let nodes = List.map fst init
+          let state: 'v map ref = ref (M.of_list init)
+          let dirty: nodeset ref = ref (S.of_list nodes)
+
+          let get node = M.find node !state
+          let read (n: node): 'v exp = (S.singleton n, fun () -> get n)
+
+          let exprs: 'v exp map = M.tabulate nodes (fun node -> step read node)
+
+          (* okay, so now we have our "depends-on"/pull graph
+           * now we invert it, to get the "supplies-to"/push graph *)
+          let client_graph: nodeset map =
+            let add_all node (deps, _) graph =
+              (let graph' = M.tabulate (S.elements deps)
+                                       (const (S.singleton node)) in
+               let merge _ l r =
+                 Some (S.union (option S.empty l) (option S.empty r)) in
+               M.merge merge graph graph')
+            in M.fold add_all exprs M.empty
+
+          (* node --> set of "client" nodes that depend on it *)
+          let clients (n: node): nodeset = M.find n client_graph
+
+          let update (node: node): unit =
+            (let (_, thunk) = M.find node exprs in
+             let value = thunk () in
+             state := M.add node value !state;
+             dirty := S.union !dirty (clients node))
+
+          let rec loop () =
+            (if S.is_empty !dirty then () else
+               let node = S.choose !dirty in
+               dirty := S.remove node !dirty;
+               update node;
+               loop ())
+
+        end
+      in Graph.loop (); Graph.get
+end
+
+
 (* instances *)
-module S = Flow(struct type t = string
+module S = Pull(struct type t = string
                        let compare = String.compare
                        let to_string x = x
                 end)
 
-module I = Flow(struct type t = int
+module I = Pull(struct type t = int
                        let compare = compare
                        let to_string = string_of_int
                 end)
-
-
-(* utility *)
-let const x y = x
-let even (n:int): bool = n mod 2 = 0
-let odd n = not (even n)
 
 
 (* examples *)
@@ -137,4 +242,6 @@ let func1 (self: int -> int I.exp) (x: int): int I.exp =
   | 0 -> I.map (fun x -> if x < 2 then x + 1 else x) prev
   | n -> I.map ((+) 1) (self (n-1))
 
-let ex1 = I.fix ~init:(const 0) ~step:func1 ~value_to_string:string_of_int ()
+let ex1 = I.fix ~init:[0,0; 1,0; 2,0; 3,0]
+                ~step:func1
+                ~value_to_string:string_of_int ()
