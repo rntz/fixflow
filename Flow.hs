@@ -1,15 +1,12 @@
 {-# LANGUAGE MultiParamTypeClasses, RankNTypes, FlexibleContexts,
-    ScopedTypeVariables #-}
+    ScopedTypeVariables, LambdaCase #-}
 module Flow where
 
 import Control.Applicative
 import Control.Monad
 import Control.Monad.Reader.Class
 import Control.Monad.State.Strict
-import Control.Monad.ST
 
-import Data.STRef
-import Data.Monoid (Any (..))
 import Data.Map.Strict (Map)
 import Data.Set (Set)
 import qualified Data.Map.Strict as Map
@@ -110,6 +107,26 @@ pullGet graph node = do (finished, cache) <- get
 
 
 -- Push-based dataflow implementation
-data Push st node a = Push { pushDeps :: Set node
-                           , pushThunk :: ST st a }
+-- data Push st node a = Push { pushDeps :: Set node
+--                            , pushThunk :: ST st a }
 
+
+
+-- Examples
+testPull :: (Ord n, Eq v) => Graph n v -> n -> v
+testPull g n = evalState (pullGet g n) state
+    where state = pullInit g
+
+ex1 :: Graph Int Int
+ex1 = Graph
+      (Map.fromList $ zip [0..10] [0,0..])
+      (\self n -> case n of 0 -> self 0
+                            n -> (1 +) <$> self (n-1))
+
+ex2 :: Graph Int Int
+ex2 = Graph
+      (Map.fromList $ zip [0..10] [0,0..])
+      (\self n -> case n of
+                    0 -> let f x = if x < 2 then x+1 else x
+                         in f <$> self n
+                    n -> (1+) <$> self (n-1))
