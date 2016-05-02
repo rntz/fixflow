@@ -29,40 +29,39 @@ data Graph node value = Graph { graphInit :: Init node value
 type PullState node value = (Set node, Map node value)
 
 -- The "expression" type we use.
-newtype Pull node value a =
-    Pull { runPull :: Set node -> Map node value
-                   -> (a, Bool, Set node, Map node value) }
+newtype PullExp node value a =
+    PullExp { runPullExp :: Set node -> Map node value
+                         -> (a, Bool, Set node, Map node value) }
 
--- Instances for Pull.
-instance Ord node => Functor (Pull node value) where fmap = liftM
-instance Ord node => Applicative (Pull node value) where
+-- Instances for PullExp.
+instance Ord node => Functor (PullExp node value) where fmap = liftM
+instance Ord node => Applicative (PullExp node value) where
     pure = return; (<*>) = ap
-instance Ord node => Monad (Pull node value) where
-    return x = Pull (\_ cache -> (x, False, Set.empty, cache))
-    Pull a >>= f = Pull g
+instance Ord node => Monad (PullExp node value) where
+    return x = PullExp (\_ cache -> (x, False, Set.empty, cache))
+    PullExp a >>= f = PullExp g
         where g frozen cache =
                   let (av, achange, avisit, cache1) = a frozen cache
                       frozen1 = Set.union frozen avisit
                       (fv, fchange, fvisit, cache2) =
-                          runPull (f av) frozen1 cache1
+                          runPullExp (f av) frozen1 cache1
                   in (fv, achange || fchange, Set.union avisit fvisit, cache2)
 
-instance Ord node => MonadState (Map node value) (Pull node value) where
-    state f = Pull (\_ cache -> let (v,cache') = f cache
-                                in (v, False, Set.empty, cache'))
+instance Ord node => MonadState (Map node value) (PullExp node value) where
+    state f = PullExp (\_ cache -> let (v,cache') = f cache
+                                   in (v, False, Set.empty, cache'))
 
-instance Ord node => MonadReader (Set node) (Pull node value) where
-    ask = Pull (\frozen cache -> (frozen, False, Set.empty, cache))
-    local f (Pull g) = Pull (g . f)
+markChanged :: PullExp node value ()
+markChanged = PullExp (\frozen cache -> ((), True, Set.empty, cache))
 
-markChanged :: Pull node value ()
-markChanged = Pull (\frozen cache -> ((), True, Set.empty, cache))
+markVisited :: Set node -> PullExp node value ()
+markVisited nodes = PullExp (\frozen cache -> ((), False, nodes, cache))
 
-markVisited :: Set node -> Pull node value ()
-markVisited nodes = Pull (\frozen cache -> ((), False, nodes, cache))
+getFrozen :: PullExp node value (Set node)
+getFrozen = PullExp (\frozen cache -> (frozen, False, Set.empty, cache))
 
-listen :: Pull node value a -> Pull node value (a, Bool, Set node)
-listen (Pull f) = Pull g
+listen :: PullExp node value a -> PullExp node value (a, Bool, Set node)
+listen (PullExp f) = PullExp g
     where g frozen cache = ((x, changed, visited), changed, visited, cache')
               where (x, changed, visited, cache') = f frozen cache
 
@@ -76,21 +75,20 @@ pullGet :: forall node value m.
            Graph node value -> node -> m value
 pullGet graph node = do (finished, cache) <- get
                         let (value, _changed, visited, cache') =
-                                runPull (visit node) finished cache
+                                runPullExp (visit node) finished cache
                         put (Set.union finished visited, cache')
                         return value
     where
-      visit :: node -> Pull node value value
+      visit :: node -> PullExp node value value
       visit node = do cachedValue <- gets (Map.! node)
-                      frozen <- ask
+                      -- we have to get the frozen set before we markVisited,
+                      -- b/c markVisited adds to the frozen set.
+                      frozen <- getFrozen
                       markVisited (Set.singleton node)
-                      frozen2 <- ask
-                      unless (Set.member node frozen2) (error "THIS SHOULD NOT HAPPEN")
                       if Set.member node frozen
                       then return cachedValue
-                      else local (Set.union (Set.singleton node))
-                                 (iterate node cachedValue)
-      iterate :: node -> value -> Pull node value value
+                      else iterate node cachedValue
+      iterate :: node -> value -> PullExp node value value
       iterate node oldValue = do
         (newValue, changed, visited) <- listen (step node oldValue)
         if not changed || not (Set.member node visited)
@@ -98,7 +96,7 @@ pullGet graph node = do (finished, cache) <- get
         -- iterate further.
         then return newValue
         else iterate node newValue
-      step :: node -> value -> Pull node value value
+      step :: node -> value -> PullExp node value value
       step node oldValue = do newValue <- graphStep graph visit node
                               when (oldValue /= newValue) $ do
                                 modify (Map.insert node newValue)
@@ -107,9 +105,56 @@ pullGet graph node = do (finished, cache) <- get
 
 
 -- Push-based dataflow implementation
--- data Push st node a = Push { pushDeps :: Set node
---                            , pushThunk :: ST st a }
+data PushExp node value a = PushExp { pushDeps :: Set node
+                                    , pushThunk :: Map node value -> a }
 
+instance Ord node => Functor (PushExp node value) where fmap = liftA
+instance Ord node => Applicative (PushExp node value) where
+    pure x = PushExp Set.empty (const x)
+    PushExp adeps a <*> PushExp bdeps b = PushExp (Set.union adeps bdeps) ab
+        where ab map = a map (b map)
+
+-- The monad in which we iterate the state to completion
+type Push node value = State (Set node, Map node value)
+
+pushFix :: (Ord node, Eq value) => Graph node value -> node -> value
+pushFix (Graph init step) = evalState (pusher step clients) (nodes, init)
+    where nodes = Set.fromList (Map.keys init)
+          clients key = clientGraph Map.! key
+          clientGraph = undefined
+
+pusher :: (Ord node, Eq value) =>
+          Step node value
+       -> (node -> Set node)    -- reverse dependency graph
+       -> Push node value (node -> value)
+pusher step clients = do next <- popDirty
+                         case next of
+                           Just node -> do stepNode step node
+                                           markDirty (clients node)
+                                           pusher step clients
+                           -- DONE!
+                           Nothing -> do cache <- gets snd
+                                         return (cache Map.!)
+
+markDirty :: (Ord node, Eq value) => Set node -> Push node value ()
+markDirty nodes = modify (\(dirty, cache) -> (Set.union dirty nodes, cache))
+
+popDirty :: (Ord node, Eq value) =>  Push node value (Maybe node)
+popDirty = do (dirty, cache) <- get
+              case choose dirty of
+                Nothing -> return Nothing
+                Just (node, dirty') -> do put (dirty', cache)
+                                          return (Just node)
+
+stepNode :: (Ord node, Eq value) => Step node value -> node
+         -> Push node value ()
+stepNode = undefined
+
+-- A scheduling strategy for dirty nodes. Currently: the one with the smallest
+-- index. I'm not sure there's anything smarter that we could do.
+choose :: Ord a => Set a -> Maybe (a, Set a)
+choose x | Set.null x = Nothing
+         | otherwise = Just (Set.deleteFindMin x)
 
 
 -- Examples
