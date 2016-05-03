@@ -1,5 +1,5 @@
-{-# LANGUAGE MultiParamTypeClasses, RankNTypes, FlexibleContexts,
-    ScopedTypeVariables, LambdaCase #-}
+{-# LANGUAGE MultiParamTypeClasses, Rank2Types, FlexibleContexts,
+    ScopedTypeVariables #-}
 module Flow where
 
 import Control.Applicative
@@ -30,7 +30,9 @@ data Graph node value = Graph { graphInit :: Init node value
                               , graphStep :: Step node value }
 
 
--- Pull-based dataflow implementation
+--------------------------------------------------------
+---------- PULL-BASED dataflow implementation ----------
+--------------------------------------------------------
 
 -- The top-level monad: we keep a set of finished nodes & a map from nodes to
 -- their current values.
@@ -112,7 +114,11 @@ pullGet graph node = do (finished, cache) <- get
                               return newValue
 
 
--- Push-based dataflow implementation
+--------------------------------------------------------
+---------- PUSH-BASED dataflow implementation ----------
+--------------------------------------------------------
+
+-- The applicative expression functor we use.
 data PushExp node value a = PushExp { pushDeps :: Set node
                                     , pushThunk :: Map node value -> a }
 
