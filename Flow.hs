@@ -52,9 +52,9 @@ type Push node value = State (Set node, Map node value)
 
 pushFix :: forall node value. (Ord node, Eq value, Show node, Show value) =>
            Graph node value -> Map node value
-pushFix (Graph init step) = evalState loop (nodes, init)
+pushFix (Graph init step) = evalState loop (Set.fromList nodes, init)
     where
-      nodes = Set.fromList (Map.keys init)
+      nodes = Map.keys init
       loop = do next <- popDirty
                 case next of Just node -> do run node; loop
                              Nothing -> done
@@ -66,7 +66,7 @@ pushFix (Graph init step) = evalState loop (nodes, init)
                       markDirty (clientsOf node)
                       writeNode node newValue
       exprs :: Map node (PushExp node value value)
-      exprs = tabulate (Map.keys init) (step readNode)
+      exprs = tabulate nodes (step readNode)
       -- needed in case a node has no clients and doesn't show up in the
       -- inverted dependency graph.
       clientsOf node = Map.findWithDefault Set.empty node clients
