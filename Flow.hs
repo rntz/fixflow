@@ -3,8 +3,6 @@
 module Flow where
 
 import Control.Applicative
-import Control.Monad
-import Control.Monad.Reader.Class
 import Control.Monad.State.Strict
 
 import Data.Map.Strict (Map, (!))
