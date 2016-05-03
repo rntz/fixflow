@@ -31,6 +31,70 @@ data Graph node value = Graph { graphInit :: Init node value
 
 
 --------------------------------------------------------
+---------- PUSH-BASED dataflow implementation ----------
+--------------------------------------------------------
+
+-- The applicative expression functor we use.
+data PushExp node value a = PushExp { pushDeps :: Set node
+                                    , pushThunk :: Map node value -> a }
+
+instance Ord node => Functor (PushExp node value) where fmap = liftA
+instance Ord node => Applicative (PushExp node value) where
+    pure x = PushExp Set.empty (const x)
+    PushExp adeps a <*> PushExp bdeps b = PushExp (Set.union adeps bdeps) ab
+        where ab map = a map (b map)
+
+readNode :: Ord node => node -> PushExp node value value
+readNode node = PushExp (Set.singleton node) (! node)
+
+-- The monad in which we iterate the state to completion
+type Push node value = State (Set node, Map node value)
+
+pushFix :: forall node value. (Ord node, Eq value, Show node, Show value) =>
+           Graph node value -> Map node value
+pushFix (Graph init step) = evalState loop (nodes, init)
+    where
+      nodes = Set.fromList (Map.keys init)
+      loop = do next <- popDirty
+                case next of Just node -> do run node; loop
+                             Nothing -> done
+      done = gets snd
+      run node = do cache <- gets snd
+                    let oldValue = cache ! node
+                    let newValue = pushThunk (exprs ! node) cache
+                    unless (oldValue == newValue) $ do
+                      markDirty (clientsOf node)
+                      writeNode node newValue
+      exprs :: Map node (PushExp node value value)
+      exprs = tabulate (Map.keys init) (step readNode)
+      -- needed in case a node has no clients and doesn't show up in the
+      -- inverted dependency graph.
+      clientsOf node = Map.findWithDefault Set.empty node clients
+      clients :: Map node (Set node)
+      clients = invert (Map.map pushDeps exprs)
+
+writeNode :: (Ord node, Eq value) => node -> value -> Push node value ()
+writeNode node value = modify f
+    where f (dirty, cache) = (dirty, Map.insert node value cache)
+
+markDirty :: (Ord node, Eq value) => Set node -> Push node value ()
+markDirty nodes = modify (\(dirty, cache) -> (Set.union dirty nodes, cache))
+
+popDirty :: (Ord node, Eq value) =>  Push node value (Maybe node)
+popDirty = do (dirty, cache) <- get
+              case choose dirty of
+                Nothing -> return Nothing
+                Just (node, dirty') -> do put (dirty', cache)
+                                          return (Just node)
+
+-- A scheduling strategy for dirty nodes. Currently: the one with the smallest
+-- index. I'm not sure there's anything smarter that we could do.
+choose :: Ord a => Set a -> Maybe (a, Set a)
+choose x | Set.null x = Nothing
+         | otherwise = Just (Set.deleteFindMin x)
+
+
+--------------------------------------------------------
 ---------- PULL-BASED dataflow implementation ----------
 --------------------------------------------------------
 
@@ -114,71 +178,9 @@ pullGet graph node = do (finished, cache) <- get
                               return newValue
 
 
---------------------------------------------------------
----------- PUSH-BASED dataflow implementation ----------
---------------------------------------------------------
-
--- The applicative expression functor we use.
-data PushExp node value a = PushExp { pushDeps :: Set node
-                                    , pushThunk :: Map node value -> a }
-
-instance Ord node => Functor (PushExp node value) where fmap = liftA
-instance Ord node => Applicative (PushExp node value) where
-    pure x = PushExp Set.empty (const x)
-    PushExp adeps a <*> PushExp bdeps b = PushExp (Set.union adeps bdeps) ab
-        where ab map = a map (b map)
-
-readNode :: Ord node => node -> PushExp node value value
-readNode node = PushExp (Set.singleton node) (! node)
-
--- The monad in which we iterate the state to completion
-type Push node value = State (Set node, Map node value)
-
-pushFix :: forall node value. (Ord node, Eq value, Show node, Show value) =>
-           Graph node value -> Map node value
-pushFix (Graph init step) = evalState loop (nodes, init)
-    where
-      nodes = Set.fromList (Map.keys init)
-      loop = do next <- popDirty
-                case next of Just node -> do run node; loop
-                             Nothing -> done
-      done = gets snd
-      run node = do cache <- gets snd
-                    let oldValue = cache ! node
-                    let newValue = pushThunk (exprs ! node) cache
-                    unless (oldValue == newValue) $ do
-                      markDirty (clientsOf node)
-                      writeNode node newValue
-      exprs :: Map node (PushExp node value value)
-      exprs = tabulate (Map.keys init) (step readNode)
-      -- needed in case a node has no clients and doesn't show up in the
-      -- inverted dependency graph.
-      clientsOf node = Map.findWithDefault Set.empty node clients
-      clients :: Map node (Set node)
-      clients = invert (Map.map pushDeps exprs)
-
-writeNode :: (Ord node, Eq value) => node -> value -> Push node value ()
-writeNode node value = modify f
-    where f (dirty, cache) = (dirty, Map.insert node value cache)
-
-markDirty :: (Ord node, Eq value) => Set node -> Push node value ()
-markDirty nodes = modify (\(dirty, cache) -> (Set.union dirty nodes, cache))
-
-popDirty :: (Ord node, Eq value) =>  Push node value (Maybe node)
-popDirty = do (dirty, cache) <- get
-              case choose dirty of
-                Nothing -> return Nothing
-                Just (node, dirty') -> do put (dirty', cache)
-                                          return (Just node)
-
--- A scheduling strategy for dirty nodes. Currently: the one with the smallest
--- index. I'm not sure there's anything smarter that we could do.
-choose :: Ord a => Set a -> Maybe (a, Set a)
-choose x | Set.null x = Nothing
-         | otherwise = Just (Set.deleteFindMin x)
-
-
--- Examples
+------------------------------
+---------- Examples ----------
+------------------------------
 testPull :: (Ord n, Eq v) => Graph n v -> n -> v
 testPull g n = evalState (pullGet g n) state
     where state = pullInit g
