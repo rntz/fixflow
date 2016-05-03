@@ -1,5 +1,4 @@
-{-# LANGUAGE MultiParamTypeClasses, Rank2Types, FlexibleContexts,
-    ScopedTypeVariables #-}
+{-# LANGUAGE MultiParamTypeClasses, Rank2Types, ScopedTypeVariables #-}
 module Flow where
 
 import Control.Applicative
@@ -163,9 +162,8 @@ pullInit :: Ord node => Graph node value -> PullState node value
 pullInit g = (Set.empty, graphInit g)
 
 -- The guts of the pull-based implementation are here.
-pullGet :: forall node value m.
-           (Ord node, Eq value, MonadState (PullState node value) m) =>
-           Graph node value -> node -> m value
+pullGet :: forall node value. (Ord node, Eq value) =>
+           Graph node value -> node -> State (PullState node value) value
 pullGet graph node = do (finished, cache) <- get
                         let (value, _changed, visited, cache') =
                                 runPullExp (visit node) finished cache
