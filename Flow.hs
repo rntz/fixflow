@@ -12,6 +12,29 @@ import Data.Set (Set)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 
+-- A recursive dataflow graph consists of a set of nodes, each with an initial
+-- value, and a step function that computes the "next" value of a node from the
+-- "previous" values of all nodes.
+--
+-- For this to be deterministic/confluent, I believe it suffices that the step
+-- function be monotone (wrt some ordering of the value type) in the "previous
+-- values" map!
+data Graph node value = Graph { graphInit :: Init node value
+                              , graphStep :: Step node value }
+
+type Init node value = Map node value
+
+-- The step function is restricted to be Applicative in the node's values. This
+-- prevents dynamically choosing which nodes to evaluate based on node's value.
+-- This forces the dependency graph to be static. This prevents some useful
+-- dataflow programs, but enables some useful implementation strategies; a
+-- tradeoff.
+type Step node value =
+    forall exp. Applicative exp =>
+    (node -> exp value) -> node -> exp value
+
+
+-- Some utility functions.
 tabulate :: Ord a => [a] -> (a -> b) -> Map a b
 tabulate keys func = Map.fromList [(k, func k) | k <- keys]
 
@@ -19,15 +42,6 @@ invert :: (Ord a, Ord b) => Map a (Set b) -> Map b (Set a)
 invert m = Map.fromListWith Set.union l
     where l = [ (v, Set.singleton k)
               | (k,vs) <- Map.toList m, v <- Set.toList vs]
-
--- A recursive dataflow graph
-type Init node value = Map node value
-type Step node value =
-    forall exp. Applicative exp =>
-    (node -> exp value) -> node -> exp value
-
-data Graph node value = Graph { graphInit :: Init node value
-                              , graphStep :: Step node value }
 
 
 --------------------------------------------------------
