@@ -7,10 +7,18 @@ import Control.Monad
 import Control.Monad.Reader.Class
 import Control.Monad.State.Strict
 
-import Data.Map.Strict (Map)
+import Data.Map.Strict (Map, (!))
 import Data.Set (Set)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
+
+tabulate :: Ord a => [a] -> (a -> b) -> Map a b
+tabulate keys func = Map.fromList [(k, func k) | k <- keys]
+
+invert :: (Ord a, Ord b) => Map a (Set b) -> Map b (Set a)
+invert m = Map.fromListWith Set.union l
+    where l = [ (v, Set.singleton k)
+              | (k,vs) <- Map.toList m, v <- Set.toList vs]
 
 -- A recursive dataflow graph
 type Init node value = Map node value
@@ -80,7 +88,7 @@ pullGet graph node = do (finished, cache) <- get
                         return value
     where
       visit :: node -> PullExp node value value
-      visit node = do cachedValue <- gets (Map.! node)
+      visit node = do cachedValue <- gets (! node)
                       -- we have to get the frozen set before we markVisited,
                       -- b/c markVisited adds to the frozen set.
                       frozen <- getFrozen
@@ -114,27 +122,35 @@ instance Ord node => Applicative (PushExp node value) where
     PushExp adeps a <*> PushExp bdeps b = PushExp (Set.union adeps bdeps) ab
         where ab map = a map (b map)
 
+readNode :: Ord node => node -> PushExp node value value
+readNode node = PushExp (Set.singleton node) (! node)
+
 -- The monad in which we iterate the state to completion
 type Push node value = State (Set node, Map node value)
 
-pushFix :: (Ord node, Eq value) => Graph node value -> node -> value
-pushFix (Graph init step) = evalState (pusher step clients) (nodes, init)
-    where nodes = Set.fromList (Map.keys init)
-          clients key = clientGraph Map.! key
-          clientGraph = undefined
+pushFix :: forall node value. (Ord node, Eq value) =>
+           Graph node value -> node -> value
+pushFix (Graph init step) = evalState loop (nodes, init)
+    where
+      nodes = Set.fromList (Map.keys init)
+      loop = do next <- popDirty
+                case next of Just node -> do run node; loop
+                             Nothing -> done
+      done = (!) <$> gets snd
+      run node = do cache <- gets snd
+                    let oldValue = cache ! node
+                    let newValue = pushThunk (exprs ! node) cache
+                    unless (oldValue == newValue) $ do
+                      markDirty (clients ! node)
+                      writeNode node newValue
+      exprs :: Map node (PushExp node value value)
+      exprs = tabulate (Map.keys init) (step readNode)
+      clients :: Map node (Set node)
+      clients = invert (Map.map pushDeps exprs)
 
-pusher :: (Ord node, Eq value) =>
-          Step node value
-       -> (node -> Set node)    -- reverse dependency graph
-       -> Push node value (node -> value)
-pusher step clients = do next <- popDirty
-                         case next of
-                           Just node -> do stepNode step node
-                                           markDirty (clients node)
-                                           pusher step clients
-                           -- DONE!
-                           Nothing -> do cache <- gets snd
-                                         return (cache Map.!)
+writeNode :: (Ord node, Eq value) => node -> value -> Push node value ()
+writeNode node value = modify f
+    where f (dirty, cache) = (dirty, Map.insert node value cache)
 
 markDirty :: (Ord node, Eq value) => Set node -> Push node value ()
 markDirty nodes = modify (\(dirty, cache) -> (Set.union dirty nodes, cache))
@@ -145,10 +161,6 @@ popDirty = do (dirty, cache) <- get
                 Nothing -> return Nothing
                 Just (node, dirty') -> do put (dirty', cache)
                                           return (Just node)
-
-stepNode :: (Ord node, Eq value) => Step node value -> node
-         -> Push node value ()
-stepNode = undefined
 
 -- A scheduling strategy for dirty nodes. Currently: the one with the smallest
 -- index. I'm not sure there's anything smarter that we could do.
