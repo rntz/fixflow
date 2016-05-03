@@ -22,9 +22,9 @@ data Graph node value = Graph { graphInit :: Init node value
 
 type Init node value = Map node value
 
--- The step function is restricted to be Applicative in the node's values. This
--- prevents dynamically choosing which nodes to evaluate based on node's value.
--- This forces the dependency graph to be static. This prevents some useful
+-- The step function is restricted to be Applicative in the nodes' values. This
+-- prevents dynamically choosing which nodes to evaluate based on a node's
+-- value, forcing the dependency graph to be static. This prevents some useful
 -- dataflow programs, but enables some useful implementation strategies; a
 -- tradeoff.
 type Step node value =
@@ -62,15 +62,15 @@ readNode node = PushExp (Set.singleton node) (! node)
 -- The monad in which we iterate the state to completion
 type Push node value = State (Set node, Map node value)
 
-pushFix :: forall node value. (Ord node, Eq value, Show node, Show value) =>
+pushFix :: forall node value. (Ord node, Eq value) =>
            Graph node value -> Map node value
 pushFix (Graph init step) = evalState loop (Set.fromList nodes, init)
     where
       nodes = Map.keys init
       loop = do next <- popDirty
                 case next of Just node -> do run node; loop
-                             Nothing -> done
-      done = gets snd
+                             Nothing -> gets snd
+      run :: node -> Push node value ()
       run node = do cache <- gets snd
                     let oldValue = cache ! node
                     let newValue = pushThunk (exprs ! node) cache
@@ -110,10 +110,6 @@ choose x | Set.null x = Nothing
 ---------- PULL-BASED dataflow implementation ----------
 --------------------------------------------------------
 
--- The top-level monad: we keep a set of finished nodes & a map from nodes to
--- their current values.
-type PullState node value = (Set node, Map node value)
-
 -- The "expression" type we use.
 newtype PullExp node value a =
     PullExp { runPullExp :: Set node -> Map node value
@@ -151,11 +147,14 @@ listen (PullExp f) = PullExp g
     where g frozen cache = ((x, changed, visited), changed, visited, cache')
               where (x, changed, visited, cache') = f frozen cache
 
-
--- The guts of the pull-based dataflow implementation
+-- Our top-level state is: a set of finished nodes & a map from nodes to their
+-- current values.
+type PullState node value = (Set node, Map node value)
+
 pullInit :: Ord node => Graph node value -> PullState node value
 pullInit g = (Set.empty, graphInit g)
 
+-- The guts of the pull-based implementation are here.
 pullGet :: forall node value m.
            (Ord node, Eq value, MonadState (PullState node value) m) =>
            Graph node value -> node -> m value
