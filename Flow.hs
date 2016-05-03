@@ -128,23 +128,26 @@ readNode node = PushExp (Set.singleton node) (! node)
 -- The monad in which we iterate the state to completion
 type Push node value = State (Set node, Map node value)
 
-pushFix :: forall node value. (Ord node, Eq value) =>
-           Graph node value -> node -> value
+pushFix :: forall node value. (Ord node, Eq value, Show node, Show value) =>
+           Graph node value -> Map node value
 pushFix (Graph init step) = evalState loop (nodes, init)
     where
       nodes = Set.fromList (Map.keys init)
       loop = do next <- popDirty
                 case next of Just node -> do run node; loop
                              Nothing -> done
-      done = (!) <$> gets snd
+      done = gets snd
       run node = do cache <- gets snd
                     let oldValue = cache ! node
                     let newValue = pushThunk (exprs ! node) cache
                     unless (oldValue == newValue) $ do
-                      markDirty (clients ! node)
+                      markDirty (clientsOf node)
                       writeNode node newValue
       exprs :: Map node (PushExp node value value)
       exprs = tabulate (Map.keys init) (step readNode)
+      -- needed in case a node has no clients and doesn't show up in the
+      -- inverted dependency graph.
+      clientsOf node = Map.findWithDefault Set.empty node clients
       clients :: Map node (Set node)
       clients = invert (Map.map pushDeps exprs)
 
