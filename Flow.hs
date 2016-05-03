@@ -22,8 +22,9 @@ import qualified Data.Set as Set
 --
 -- However, I believe that if the step function is monotone (wrt some ordering
 -- of the value type) in the "previous values" map, this suffices to show that
--- the dataflow graph is essentially deterministic: if it reaches a fixed point,
--- it always reaches the same one.
+-- the dataflow graph is essentially deterministic: if it can reach a fixed
+-- point, there is only one fixed point, and it will eventually reach it
+-- assuming a fair scheduler.
 data Graph node value = Graph { graphInit :: Init node value
                               , graphStep :: Step node value }
 
