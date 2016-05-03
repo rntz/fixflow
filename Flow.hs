@@ -14,9 +14,16 @@ import qualified Data.Set as Set
 -- value, and a step function that computes the "next" value of a node from the
 -- "previous" values of all nodes.
 --
--- For this to be deterministic/confluent, I believe it suffices that the step
--- function be monotone (wrt some ordering of the value type) in the "previous
--- values" map!
+-- When every node's next value is the same as its current value, the dataflow
+-- graph has reached a fixed point - the computation has terminated.
+--
+-- If we let nodes be evaluated in no particular order, this forms a concurrent,
+-- nondeterministic model of computation.
+--
+-- However, I believe that if the step function is monotone (wrt some ordering
+-- of the value type) in the "previous values" map, this suffices to show that
+-- the dataflow graph is essentially deterministic: if it reaches a fixed point,
+-- it always reaches the same one.
 data Graph node value = Graph { graphInit :: Init node value
                               , graphStep :: Step node value }
 
